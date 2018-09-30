@@ -35,7 +35,10 @@ class ConcatPlugin {
 
         // used to determine if we should emit files during compiler emit event
         this.startTime = Date.now();
-        this.prevTimestamps = {};
+        // Store reference to previous compilation.fileTimestamps,
+        // which is a Map starting in webpack v4.0.0
+        // https://github.com/webpack/webpack/releases/tag/v4.0.0
+        this.prevTimestamps = new Map();
         this.needCreateNewFile = true;
     }
 
@@ -266,29 +269,33 @@ class ConcatPlugin {
         const self = this;
 
         const dependenciesChanged = (compilation, filesToConcatAbsolute) => {
-            const fileTimestampsKeys = Object.keys(compilation.fileTimestamps);
-            // Since there are no time stamps, assume this is the first run and emit files
-            if (!fileTimestampsKeys.length) {
+            // If there are no timestamps, assume this is the first run and emit files.
+            if (!self.prevTimestamps.size) {
+                self.prevTimestamps = compilation.fileTimestamps;
                 return true;
             }
-            const changed = fileTimestampsKeys.filter(watchfile =>
-                (self.prevTimestamps[watchfile] || self.startTime) < (compilation.fileTimestamps[watchfile] || Infinity)
-            ).some(f => filesToConcatAbsolute.includes(f));
+            const filesChanged = filesToConcatAbsolute.filter((file) => {
+                // Any file in filesToConcatAbsolute is expected to be a key in compilation.fileTimestamps Map.
+                const prevTimestamp = self.prevTimestamps.get(file);
+                const currTimestamp = compilation.fileTimestamps.get(file);
+                return prevTimestamp < currTimestamp;
+            });
+            // Save timestamps for next time.
             this.prevTimestamps = compilation.fileTimestamps;
-            return changed;
+            return filesChanged.length > 0;
         };
 
         const processCompiling = (compilation, callback) => {
             self.filesToConcatAbsolutePromise.then(filesToConcatAbsolute => {
                 for (const f of filesToConcatAbsolute) {
-                    compilation.fileDependencies.add(path.relative(compiler.options.context, f));
+                    // compilation.fileDependencies expects absolute paths
+                    compilation.fileDependencies.add(f);
                 }
                 if (!dependenciesChanged(compilation, filesToConcatAbsolute)) {
                     return callback();
                 }
                 return self.getReadFilePromise(true).then(files => {
                     self.resolveConcatAndUglify(compilation, files);
-
                     callback();
                 });
             }).catch(e => {
